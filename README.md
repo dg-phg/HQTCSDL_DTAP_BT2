@@ -395,3 +395,180 @@ EXEC sp_TraCuuThongTinDatPhong @LoaiPhong = N'Phòng VIP';
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/af5e3fd9-be2d-475b-962c-ad048f3090fd" />
 
 ### Phần 4: Trigger và Xử lý logic nghiệp vụ
+
+#### 4.1. Viết 01 Trigger tự động cập nhật dữ liệu liên bảng
+* **Yêu cầu nghiệp vụ của SP:**  Thiết lập hệ thống tự động tích điểm thưởng thành viên. Mỗi khi có một đơn đặt phòng mới được thanh toán (dữ liệu được INSERT vào bảng DatPhong), hệ thống sẽ tự động tính toán điểm thưởng dựa trên tổng tiền (quy đổi 100.000 VNĐ = 1 điểm) và cộng dồn trực tiếp vào cột DiemTichLuy của khách hàng đó trong bảng KhachHang. Điều này giúp tăng tính tự động hóa và đảm bảo quyền lợi cho khách hàng thân thiết.
+
+* **Mã nguồn tạo SP và lệnh khai thác:**
+```
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Thêm cột DiemTichLuy vào bảng KhachHang (nếu chưa có) để chuẩn bị cho Trigger
+IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(N'[dbo].[KhachHang]') AND name = 'DiemTichLuy')
+BEGIN
+    ALTER TABLE [KhachHang] ADD [DiemTichLuy] INT DEFAULT 0;
+END
+GO
+
+-- 2. Lệnh tạo Trigger tự động tích điểm
+CREATE TRIGGER trg_TichDiemKhachHang
+ON [DatPhong]
+AFTER INSERT
+AS
+BEGIN
+    -- Lấy Tổng Tiền từ bản ghi vừa thêm (bảng inserted) để quy đổi điểm
+    UPDATE kh
+    SET kh.[DiemTichLuy] = ISNULL(kh.[DiemTichLuy], 0) + (i.[TongTien] / 100000)
+    FROM [KhachHang] kh
+    JOIN inserted i ON kh.[MaKhachHang] = i.[MaKhachHang];
+
+    PRINT N'HỆ THỐNG: Đã tự động cộng điểm tích lũy thành công cho khách hàng!';
+END;
+GO
+```
+*Ảnh 1: Chạy xong code thêm cột và lệnh tạo Trigger*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/5d542717-446b-4fe5-9854-fc3f0fe9896a" />
+```
+-- 3. Khai thác (Test) Trigger: Thêm 1 đơn đặt phòng trị giá 2.000.000 VNĐ
+INSERT INTO [DatPhong] ([MaKhachHang], [MaPhong], [NgayNhanPhong], [NgayTraPhong], [TongTien])
+VALUES (1, 'P101', '2026-05-01', '2026-05-03', 2000000);
+
+-- Kiểm tra kết quả trong bảng Khách Hàng
+SELECT [MaKhachHang], [HoVaTen], [DiemTichLuy] FROM [KhachHang] WHERE [MaKhachHang] = 1;
+```
+*Ảnh 2: Kết quả thực thi Trigger tự động cộng 20 điểm tích lũy cho khách hàng*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/7b4deed8-d5c5-4476-a115-a8cc397577ab" />
+
+#### 4.2. Khảo sát lỗi vòng lặp Trigger (Circular Trigger)
+
+* **Yêu cầu nghiệp vụ của SP:** Thử nghiệm tình trạng xung đột logic khi hai bảng cập nhật qua lại lẫn nhau. Tạo BangA và BangB. Thiết lập Trigger sao cho: Khi BangA được chèn dữ liệu thì cập nhật sang BangB, và ngược lại khi BangB cập nhật thì lại tác động ngược về BangA.
+
+* **Mã nguồn thực thi:**
+
+``` SQL
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Tạo 2 bảng tạm để thử nghiệm vòng lặp
+CREATE TABLE BangA (ID INT, DuLieu NVARCHAR(50));
+CREATE TABLE BangB (ID INT, DuLieu NVARCHAR(50));
+INSERT INTO BangB VALUES (1, N'Dữ liệu gốc B');
+GO
+
+-- 2. Trigger trên BangA: Kích hoạt khi Insert/Update để cập nhật sang BangB
+CREATE TRIGGER trg_LoiVongLap_A ON BangA AFTER INSERT, UPDATE AS
+BEGIN
+    UPDATE BangB SET DuLieu = N'A vừa tác động' WHERE ID = 1;
+END;
+GO
+
+-- 3. Trigger trên BangB: Kích hoạt khi Update để cập nhật ngược về BangA
+CREATE TRIGGER trg_LoiVongLap_B ON BangB AFTER UPDATE AS
+BEGIN
+    UPDATE BangA SET DuLieu = N'B vừa phản hồi' WHERE ID = 1;
+END;
+GO
+
+-- 4. Thực thi lệnh "châm ngòi" vòng lặp
+INSERT INTO BangA VALUES (1, N'Bắt đầu');
+```
+
+*Ảnh 3: Thông báo lỗi hệ thống khi Trigger rơi vào vòng lặp vô hạn.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/c67b800a-96d7-42d2-b1dd-99d241e59be2" />
+
+##### Giải thích và Nhận xét:
+- Thông báo của hệ thống: Maximum stored procedure, function, trigger, or view nesting level exceeded (limit 32).
+- Giải thích lỗi: Khi ta INSERT vào BangA, Trigger A chạy và thực hiện lệnh UPDATE trên BangB. Lệnh này ngay lập tức kích hoạt Trigger B chạy, và Trigger B lại thực hiện UPDATE trên BangA. Chu kỳ này lặp đi lặp lại không có điểm dừng (Vòng lặp vô hạn).
+- Cơ chế bảo vệ: SQL Server có cơ chế kiểm soát mức độ lồng nhau (nesting level). Để tránh việc hệ thống bị treo hoặc tràn bộ nhớ, SQL Server quy định giới hạn tối đa là 32 cấp. Khi vòng lặp chạm ngưỡng này, hệ thống sẽ tự động ngắt kết nối, hủy bỏ giao dịch và xuất thông báo lỗi như trên.
+- Nhận xét cuối cùng: Đây là một lỗi thiết kế nghiêm trọng trong cơ sở dữ liệu (Circular Dependency). Khi xây dựng hệ thống thực tế, lập trình viên cần hết sức thận trọng khi viết Trigger liên bảng, phải đảm bảo luồng dữ liệu đi theo một chiều nhất định để tránh gây sập dịch vụ hoặc làm sai lệch dữ liệu hàng loạt.
+
+### Phần 5: Cursor và Duyệt dữ liệu
+#### 5.1. Sử dụng CURSOR để xử lý dữ liệu từng bản ghi
+* **Yêu cầu nghiệp vụ của SP:** Duyệt qua danh sách khách hàng. Với mỗi khách hàng, hệ thống sẽ kiểm tra tổng chi tiêu. Nếu chi tiêu > 5.000.000 VNĐ, in ra thông báo tặng mã giảm giá "VIP10", nếu dưới mức đó thì tặng mã "WELCOME5". (Đây là logic xử lý riêng biệt mà SQL dạng tập hợp thông thường khó diễn đạt dưới dạng thông báo văn bản cá nhân hóa).
+
+* **Mã nguồn thực thi:**
+
+``` SQL
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- Khai báo biến để chứa dữ liệu từ Cursor
+DECLARE @TenKH NVARCHAR(100);
+DECLARE @TongTien DECIMAL(18,2);
+
+-- 1. Khai báo Cursor
+DECLARE cur_KhuyenMai CURSOR FOR 
+SELECT kh.HoVaTen, SUM(dp.TongTien)
+FROM KhachHang kh
+LEFT JOIN DatPhong dp ON kh.MaKhachHang = dp.MaKhachHang
+GROUP BY kh.HoVaTen;
+
+-- 2. Mở Cursor
+OPEN cur_KhuyenMai;
+
+-- 3. Đọc bản ghi đầu tiên
+FETCH NEXT FROM cur_KhuyenMai INTO @TenKH, @TongTien;
+
+-- 4. Vòng lặp duyệt qua từng bản ghi
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    IF @TongTien > 5000000
+        PRINT N'Gửi tới khách hàng ' + @TenKH + N': Bạn là khách hàng VIP. Tặng bạn mã giảm giá VIP10!';
+    ELSE
+        PRINT N'Gửi tới khách hàng ' + @TenKH + N': Cảm ơn bạn đã sử dụng dịch vụ. Tặng bạn mã WELCOME5!';
+        
+    -- Đọc bản ghi tiếp theo
+    FETCH NEXT FROM cur_KhuyenMai INTO @TenKH, @TongTien;
+END;
+
+-- 5. Đóng và giải phóng Cursor
+CLOSE cur_KhuyenMai;
+DEALLOCATE cur_KhuyenMai;
+```
+*Ảnh 1: Kết quả chạy Cursor in ra thông báo cá nhân hóa trong tab Messages.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/df915e37-e913-4b87-8443-784732bee052" />
+##### Giải thích Sử dụng CURSOR để xử lý dữ liệu từng bản ghi:
+- Cơ chế hoạt động: Cursor cur_KhuyenMai đã duyệt qua danh sách các khách hàng trong hệ thống. Tại mỗi dòng (row), nó lấy ra tên khách hàng và tổng chi tiêu để kiểm tra điều kiện.
+- Kết quả hiển thị: Trong tab Messages, ta thấy hệ thống đã in ra các dòng thông báo khác nhau: Khách hàng "Nguyễn Văn An" được nhận mã VIP10 vì có chi tiêu thỏa mãn điều kiện, trong khi các khách hàng khác nhận mã WELCOME5.
+- Đặc điểm: Đây là minh chứng cho việc Cursor có thể can thiệp vào từng bản ghi để thực hiện các tác vụ ngoài SQL (như in thông báo văn bản cá nhân hóa) mà câu lệnh SELECT thông thường không làm trực tiếp được trong tab Messages.
+
+#### 5.2. Giải quyết bài toán không dùng CURSOR (Sử dụng SQL Set-based)
+* **Cách làm:** Thay vì duyệt từng dòng bằng Cursor, ta sử dụng câu lệnh `SELECT` kết hợp với biểu thức điều kiện `CASE WHEN`. Cách tiếp cận này cho phép SQL Server tính toán trên toàn bộ tập dữ liệu khách hàng cùng một lúc
+
+* **Mã nguồn thực thi:**
+
+``` SQL
+SELECT kh.HoVaTen, 
+       CASE 
+            WHEN SUM(dp.TongTien) > 5000000 THEN N'Tặng mã VIP10'
+            ELSE N'Tặng mã WELCOME5'
+       END AS [ThongBaoKhuyenMai]
+FROM KhachHang kh
+LEFT JOIN DatPhong dp ON kh.MaKhachHang = dp.MaKhachHang
+GROUP BY kh.HoVaTen;
+```
+*Ảnh 2: Kết quả truy vấn dữ liệu tập hợp nhanh chóng và chính xác.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/8c6535d8-3f1b-4c1c-91bf-a6fa082d7a13" />
+
+##### Giải thích:
+- Hiển thị dữ liệu: Kết quả trả về dưới dạng bảng (Grid) rất trực quan. Ta có thể thấy ngay danh sách khách hàng đi kèm với thông báo khuyến mãi tương ứng.
+- Tính chính xác: Khách hàng "Nguyễn Văn An" có mức chi tiêu trên 5 triệu đã được hệ thống tự động gán nhãn "Tặng mã VIP10", trong khi các khách hàng khác nhận nhãn "WELCOME5".
+-Ưu điểm: Code ngắn gọn, dễ đọc, dễ bảo trì và đặc biệt là hiệu năng thực thi cực cao so với việc dùng vòng lặp Cursor.
+#### So sánh tốc độ và Hiệu năng
+* **So sánh:** * Cursor: Xử lý theo kiểu "Row-by-row" (từng dòng một). Giống như việc bạn đi đưa thư cho từng nhà một. Rất chậm khi dữ liệu lớn vì SQL Server phải thực hiện nhiều thao tác quản lý con trỏ.
+
+- SQL Set-based: Xử lý theo kiểu "Tập hợp". Giống như việc bạn gửi email hàng loạt cho toàn thành phố cùng lúc. Cực kỳ nhanh vì tối ưu được bộ máy truy vấn của SQL.
+
+
+*Ảnh 3: Màn hình Client Statistics so sánh thời gian thực thi.*
+
+#### 5.3. Bài toán "Chỉ CURSOR mới giải quyết được" (hoặc SQL rất khó giải quyết)
+- Theo logic của em, bài toán Xử lý chuỗi dữ liệu có tính chất tích lũy theo thứ tự thời gian phức tạp là khó nhất với SQL thuần.
+
+Ví dụ: Bài toán "Trừ hàng tồn kho theo phương pháp FIFO (Nhập trước - Xuất trước)".
+
+Khi bán 10 sản phẩm, bạn phải duyệt từng lô hàng nhập về: Lô A còn 4 cái (trừ hết), Lô B còn 8 cái (trừ tiếp 6 cái nữa).
+
+Việc tính toán "số còn lại" của mỗi dòng phụ thuộc trực tiếp vào kết quả của dòng trước đó đã trừ bao nhiêu. SQL thuần (dạng tập hợp) rất khó để diễn đạt logic "vay mượn/tích lũy" liên tục giữa các dòng như vậy, trong khi Cursor duyệt từng dòng nên xử lý việc này rất tự nhiên.
+
