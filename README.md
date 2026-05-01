@@ -556,19 +556,36 @@ GROUP BY kh.HoVaTen;
 - Tính chính xác: Khách hàng "Nguyễn Văn An" có mức chi tiêu trên 5 triệu đã được hệ thống tự động gán nhãn "Tặng mã VIP10", trong khi các khách hàng khác nhận nhãn "WELCOME5".
 -Ưu điểm: Code ngắn gọn, dễ đọc, dễ bảo trì và đặc biệt là hiệu năng thực thi cực cao so với việc dùng vòng lặp Cursor.
 #### So sánh tốc độ và Hiệu năng
-* **So sánh:** * Cursor: Xử lý theo kiểu "Row-by-row" (từng dòng một). Giống như việc bạn đi đưa thư cho từng nhà một. Rất chậm khi dữ liệu lớn vì SQL Server phải thực hiện nhiều thao tác quản lý con trỏ.
-
-- SQL Set-based: Xử lý theo kiểu "Tập hợp". Giống như việc bạn gửi email hàng loạt cho toàn thành phố cùng lúc. Cực kỳ nhanh vì tối ưu được bộ máy truy vấn của SQL.
-
-
+* **So sánh:** *
+- Sử dụng Cursor: Xử lý theo kiểu "Row-by-row" (từng dòng một). Giống như việc bạn đi đưa thư cho từng nhà một. Rất chậm khi dữ liệu lớn vì SQL Server phải thực hiện nhiều thao tác quản lý con trỏ.
+- Sử dụng SQL Set-based: Xử lý theo kiểu "Tập hợp". Giống như việc bạn gửi email hàng loạt cho toàn thành phố cùng lúc. Cực kỳ nhanh vì tối ưu được bộ máy truy vấn của SQL.
 *Ảnh 3: Màn hình Client Statistics so sánh thời gian thực thi.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/fa114dc0-e559-49c4-9370-f10501d89902" />
+<img width="572" height="470" alt="image" src="https://github.com/user-attachments/assets/613a7b35-cf2b-4dd3-8416-6e18917b773d" />
 
 #### 5.3. Bài toán "Chỉ CURSOR mới giải quyết được" (hoặc SQL rất khó giải quyết)
-- Theo logic của em, bài toán Xử lý chuỗi dữ liệu có tính chất tích lũy theo thứ tự thời gian phức tạp là khó nhất với SQL thuần.
+   Trong tư duy SQL hiện đại, xử lý tập hợp (Set-based) luôn được ưu tiên. Tuy nhiên, có những bài toán thuộc nhóm "Row-by-Row Dependent Logic" (Dòng sau bắt buộc phụ thuộc vào kết quả tính toán của dòng trước), nơi mà SQL thuần rất khó diễn đạt hoặc gây sai số. Dưới đây là các ví dụ điển hình chứng minh sức mạnh của Cursor:
 
-Ví dụ: Bài toán "Trừ hàng tồn kho theo phương pháp FIFO (Nhập trước - Xuất trước)".
+*Ví dụ 1: Bài toán trừ tồn kho theo phương pháp FIFO (First-In, First-Out)*
 
-Khi bán 10 sản phẩm, bạn phải duyệt từng lô hàng nhập về: Lô A còn 4 cái (trừ hết), Lô B còn 8 cái (trừ tiếp 6 cái nữa).
++ Bối cảnh: Khách sạn nhập khăn tắm theo nhiều lô. Lô A nhập 10 cái, Lô B nhập 20 cái. Khi xuất 15 cái cho buồng phòng, hệ thống phải trừ hết 10 cái ở Lô A rồi mới nhảy sang Lô B trừ tiếp 5 cái nữa.
 
-Việc tính toán "số còn lại" của mỗi dòng phụ thuộc trực tiếp vào kết quả của dòng trước đó đã trừ bao nhiêu. SQL thuần (dạng tập hợp) rất khó để diễn đạt logic "vay mượn/tích lũy" liên tục giữa các dòng như vậy, trong khi Cursor duyệt từng dòng nên xử lý việc này rất tự nhiên.
++ Vấn đề của SQL thuần: Xử lý tập hợp tất cả các dòng cùng lúc, nên hệ thống không thể "nhớ" được sau khi trừ Lô A thì số lượng cần trừ còn lại là bao nhiêu để áp dụng chuẩn xác cho Lô B.
 
++ Giải pháp Cursor: Duyệt từng lô theo thời gian. Tại mỗi dòng, Cursor thực hiện phép tính: Số lượng cần trừ còn lại = Số lượng cần trừ - Số lượng lô hiện tại. Giá trị này được lưu vào một biến số và mang đi trừ tiếp ở dòng sau. Đây là quá trình duy trì "trạng thái" mà chỉ vòng lặp mới làm tốt.
+
+*Ví dụ 2: Bài toán tính tiền dịch vụ theo định mức lũy tiến (Bậc thang)*
+
++ Bối cảnh: Tiền điện/nước của phòng khách sạn tính theo bậc thang: 50 số đầu giá 2.000đ, từ số 51-100 giá 2.500đ...
+
++ Vấn đề của SQL thuần: Nếu khách dùng 120 số, việc viết một câu SELECT bóc tách từng phần đòi hỏi rất nhiều lệnh CASE WHEN lồng nhau, cực kỳ phức tạp và khó bảo trì khi khách sạn đổi giá.
+
++ Giải pháp Cursor: Duyệt qua bảng cấu hình định mức. Với mỗi bậc, tính toán phần sản lượng nằm trong bậc đó rồi cộng dồn vào biến TongTien. Logic rõ ràng và dễ dàng mở rộng.
+
+*Ví dụ 3: Gọi thủ tục hệ thống (Stored Procedure) cho từng bản ghi*
+
++ Bối cảnh: Cuối tháng, khách sạn cần duyệt danh sách 100 khách VIP để sinh mã giảm giá ngẫu nhiên và gửi Email tự động cho từng người.
+
++ Vấn đề của SQL thuần: Lệnh SELECT thông thường không thể tự động kích hoạt một Stored Procedure khác cho từng dòng dữ liệu mà nó đang truy vấn.
+
++ Giải pháp Cursor: Tại mỗi dòng dữ liệu khách hàng, Cursor lấy địa chỉ Email và thực thi lệnh EXEC sp_SendMail @EmailCustomer. Đây là cách an toàn và duy nhất để làm cầu nối giữa dữ liệu bảng và các tác vụ hệ thống phức tạp bên ngoài.
