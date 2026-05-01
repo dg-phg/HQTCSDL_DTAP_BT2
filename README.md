@@ -192,10 +192,206 @@ SELECT * FROM dbo.fn_LichSuDatPhongCuaKhach(1);
 ```
 
 *Ảnh 4: Khởi tạo hàm Inline Table-Valued.*
-<img width="1024" height="576" alt="image" src="https://github.com/user-attachments/assets/eb2b4c6a-565e-4314-8c69-b0afb0115be4" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e2705615-e2aa-46ea-a71c-a965e0cd325c" />
 
 *Ảnh 5: Kết quả truy vấn hàm Inline Table-Valued để lấy lịch sử của Khách hàng có mã là 1.*
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/8dd1e2cb-d953-4b79-a3fe-19953367db69" />
 
+#### 2.5. Viết 01 Multi-statement Table-Valued Function (Hàm trả về bảng đa câu lệnh - MSTVF)
+
+* **Yêu cầu nghiệp vụ của hàm:** Viết một hàm thống kê tổng doanh thu của từng phòng trong một năm cụ thể (tham số đầu vào là `@Nam`). Điểm đặc biệt của hàm MSTVF là cho phép tạo một bảng ảo `@BangThongKe` để lưu trữ tạm thời dữ liệu tổng tiền. Sau đó, sử dụng tiếp các câu lệnh `UPDATE` kết hợp điều kiện để tự động phân loại phòng thành "Doanh thu cao" (>= 2,000,000) hoặc "Doanh thu trung bình" (< 2,000,000) trước khi trả về kết quả cuối cùng.
+  
+* **Mã nguồn tạo và khai thác hàm:**
+
+```sql
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Lệnh tạo hàm
+CREATE FUNCTION [fn_ThongKeDoanhThuPhong] (@Nam INT)
+RETURNS @BangThongKe TABLE (
+    [MaPhong] VARCHAR(10),
+    [LoaiPhong] NVARCHAR(50),
+    [TongDoanhThu] DECIMAL(18,2),
+    [DanhGia] NVARCHAR(50)
+)
+AS
+BEGIN
+    -- Đưa dữ liệu tổng tiền vào bảng ảo
+    INSERT INTO @BangThongKe ([MaPhong], [LoaiPhong], [TongDoanhThu])
+    SELECT 
+        p.[MaPhong], 
+        p.[LoaiPhong], 
+        SUM(dp.[TongTien])
+    FROM [Phong] p
+    JOIN [DatPhong] dp ON p.[MaPhong] = dp.[MaPhong]
+    WHERE YEAR(dp.[NgayTraPhong]) = @Nam
+    GROUP BY p.[MaPhong], p.[LoaiPhong];
+
+    -- Dùng lệnh UPDATE để tự động phân loại đánh giá
+    UPDATE @BangThongKe
+    SET [DanhGia] = N'Doanh thu cao'
+    WHERE [TongDoanhThu] >= 2000000;
+
+    UPDATE @BangThongKe
+    SET [DanhGia] = N'Doanh thu trung bình'
+    WHERE [TongDoanhThu] < 2000000;
+
+    RETURN;
+END;
+GO
+-- 2. Thống kê doanh thu phòng và tự động đánh giá trong năm 2023
+SELECT * FROM dbo.fn_ThongKeDoanhThuPhong(2023);
+```
+
+*Ảnh 6: Khởi tạo và truy vấn hàm Multi-statement Table-Valued (MSTVF) thống kê doanh thu phòng.*
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/2508bc8c-a05e-4c35-9164-f003da3d0511" />
+
+### Phần 3: Xây dựng Store Procedure
+
+#### 3.1. Tìm hiểu System Stored Procedure có sẵn (Thủ tục lưu trữ)
+
+SQL Server cung cấp một tập hợp các Stored Procedure hệ thống (System Stored Procedures) được lưu trữ trong cơ sở dữ liệu `master`. Chúng thường có tiền tố `sp_` và được sử dụng để hỗ trợ các tác vụ quản trị, giám sát hoặc trích xuất thông tin từ hệ thống. 
+
+Một số System SP phổ biến:
+* `sp_help`: Hiển thị thông tin chi tiết về cấu trúc của một đối tượng cơ sở dữ liệu (ví dụ: bảng, view).
+* `sp_databases`: Liệt kê danh sách tất cả các cơ sở dữ liệu hiện có trong SQL Server.
+* `sp_who`: Hiển thị thông tin về các người dùng và tiến trình đang kết nối vào hệ thống.
+
+**Ví dụ khai thác:** Sử dụng `sp_help` để xem cấu trúc chi tiết của bảng `Phong`.
+```sql
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- Khai thác SP có sẵn: sp_help để xem cấu trúc bảng Phong
+EXEC sp_help 'Phong';
+```
+*Ảnh 8: Kết quả thực thi System Stored Procedure sp_help.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/0d256974-a111-40fa-ab80-908f9bd8af2b" />
+
+#### 3.2. Viết 01 Stored Procedure cập nhật dữ liệu có kiểm tra điều kiện logic
+* **Yêu cầu nghiệp vụ của SP:** Tạo thủ tục `sp_CapNhatGiaPhong` để hỗ trợ nhân viên thay đổi giá phòng. Tham số đầu vào gồm Mã Phòng (`@MaP`) và Giá Mới (`@GiaMoi`). Thủ tục sẽ kiểm tra logic: Nếu giá mới <= 0, hệ thống sẽ in ra thông báo lỗi và từ chối cập nhật. Nếu giá hợp lệ, hệ thống sẽ thực hiện lệnh `UPDATE` và báo thành công.
+* **Mã nguồn tạo SP và lệnh khai thác:**
+
+```sql
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Lệnh tạo Stored Procedure
+CREATE PROCEDURE [sp_CapNhatGiaPhong]
+    @MaP VARCHAR(10),
+    @GiaMoi DECIMAL(18,2)
+AS
+BEGIN
+    -- Kiểm tra điều kiện logic
+    IF @GiaMoi <= 0
+    BEGIN
+        PRINT N'LỖI: Giá phòng mới phải lớn hơn 0. Cập nhật thất bại!';
+        RETURN;
+    END
+
+    -- Nếu hợp lệ thì tiến hành UPDATE
+    UPDATE [Phong]
+    SET [GiaTheoNgay] = @GiaMoi
+    WHERE [MaPhong] = @MaP;
+
+    PRINT N'THÀNH CÔNG: Đã cập nhật giá phòng mới!';
+END;
+GO
+
+-- 2. Khai thác (Test) Stored Procedure
+-- Test 1: Cố tình nhập giá sai (Âm tiền) để xem SP bắt lỗi
+EXEC sp_CapNhatGiaPhong @MaP = 'P101', @GiaMoi = -50000;
+
+-- Test 2: Nhập giá đúng để SP cập nhật
+EXEC sp_CapNhatGiaPhong @MaP = 'P101', @GiaMoi = 650000;
+```
+*Ảnh 9: Kết quả kiểm tra (Test) các trường hợp đúng/sai của Stored Procedure cập nhật giá phòng.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/e73974b0-9288-427c-b890-fea797ea345e" />
+
+#### 3.3. Viết 01 Stored Procedure có sử dụng tham số OUTPUT
+* **Yêu cầu nghiệp vụ của SP:** Viết thủ tục `sp_TinhTongTienKhachHang` nhận tham số đầu vào là Mã Khách Hàng (`@MaKH`). Thủ tục thực hiện truy vấn và trả về đồng thời 2 giá trị thông qua tham số `OUTPUT`: Tên của khách hàng (`@TenKH`) và Tổng số tiền người đó đã chi tiêu (`@TongChiTieu`). Điều này giúp ứng dụng lấy được dữ liệu tính toán trực tiếp mà không cần trả về toàn bộ một bảng lớn.
+* **Mã nguồn tạo SP và lệnh khai thác:**
+
+```sql
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Lệnh tạo Stored Procedure có 2 biến OUTPUT
+CREATE PROCEDURE [sp_TinhTongTienKhachHang]
+    @MaKH INT,
+    @TenKH NVARCHAR(100) OUTPUT,
+    @TongChiTieu DECIMAL(18,2) OUTPUT
+AS
+BEGIN
+    -- Tìm tên khách hàng
+    SELECT @TenKH = [HoVaTen] 
+    FROM [KhachHang] 
+    WHERE [MaKhachHang] = @MaKH;
+
+    -- Tính tổng chi tiêu
+    SELECT @TongChiTieu = SUM([TongTien])
+    FROM [DatPhong]
+    WHERE [MaKhachHang] = @MaKH;
+
+    IF @TongChiTieu IS NULL
+        SET @TongChiTieu = 0;
+END;
+GO
+
+-- 2. Khai thác Stored Procedure
+DECLARE @Tien_Output DECIMAL(18,2); 
+DECLARE @Ten_Output NVARCHAR(100);
+
+-- Gọi SP và đưa biến vào hứng kết quả
+EXEC sp_TinhTongTienKhachHang 
+    @MaKH = 1, 
+    @TenKH = @Ten_Output OUTPUT,
+    @TongChiTieu = @Tien_Output OUTPUT;
+
+-- Hiển thị kết quả ra màn hình
+SELECT 
+    @Ten_Output AS [TenKhachHang],
+    @Tien_Output AS [TongTienChiTieu];
+```
+
+*Ảnh 10: Khởi tạo và thực thi Stored Procedure có sử dụng tham số OUTPUT.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/14fa7f6e-33c5-4cdf-b229-58433b3811c2" />
+
+#### 3.4. Viết 01 Stored Procedure trả về một tập kết quả (Result set) từ lệnh SELECT kết hợp JOIN nhiều bảng
+* **Yêu cầu nghiệp vụ của SP:** Viết thủ tục sp_TraCuuThongTinDatPhong nhận tham số đầu vào là Loại phòng (@LoaiPhong). Thủ tục này có nhiệm vụ kết nối (JOIN) dữ liệu từ 3 bảng gồm DatPhong, KhachHang và Phong để trả về danh sách chi tiết các giao dịch đặt phòng tương ứng với loại phòng được yêu cầu, đi kèm thông tin liên hệ của khách hàng để nhân viên dễ dàng quản lý.
+
+* **Mã nguồn tạo SP và lệnh khai thác:**
+
+```SQL
+USE [QuanLyKhachSan_K235480106056];
+GO
+
+-- 1. Lệnh tạo Stored Procedure JOIN 3 bảng
+CREATE PROCEDURE [sp_TraCuuThongTinDatPhong]
+    @LoaiPhong NVARCHAR(50)
+AS
+BEGIN
+    SELECT 
+        dp.[MaDatPhong],
+        kh.[HoVaTen] AS [TenKhachHang],
+        kh.[SoDienThoai],
+        p.[MaPhong],
+        p.[LoaiPhong],
+        dp.[NgayNhanPhong],
+        dp.[TongTien]
+    FROM [DatPhong] dp
+    JOIN [KhachHang] kh ON dp.[MaKhachHang] = kh.[MaKhachHang]
+    JOIN [Phong] p ON dp.[MaPhong] = p.[MaPhong]
+    WHERE p.[LoaiPhong] = @LoaiPhong;
+END;
+GO
+
+-- 2. Khai thác (Test) Stored Procedure
+EXEC sp_TraCuuThongTinDatPhong @LoaiPhong = N'Phòng VIP';
+```
+*Ảnh 11: Kết quả truy vấn Stored Procedure có sử dụng JOIN 3 bảng để tra cứu thông tin đặt phòng.*
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/af5e3fd9-be2d-475b-962c-ad048f3090fd" />
+
+### Phần 4: Trigger và Xử lý logic nghiệp vụ
